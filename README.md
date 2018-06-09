@@ -4,7 +4,11 @@ Python Data Analysis Library 或 pandas 是基于NumPy 的一种工具，该工�
 
 在工作中经常操作数据表会有这样一种感受，在某些具体的统计分析等场景下是pandas比较高效，但是在快速迭代的业务场景下，pandas的代码重构和数据分析就显得繁琐了，而且代码的可读性没有SQL好。基于这样的需求，萌生了将SQL和pandas相结合的想法，即用写SQL代码，将SQL转成pandas的语法然后执行得到结果。如果直接用数据库作为存储用SQL重构，不仅工作量大，而且有些业务逻辑的函数是SQL无法实现的，这也是为什么要以pandas为基础，经SQL转成pandas执行，而不是反过来，将pandas dataframe导入到数据库用SQL重构。
 
+# How about using sql on pandas
+In the work of operating the data table often has such a feeling, in some specific statistical analysis and other scenarios is pandas more efficient, but in a fast iterative business scenario, pandas code reconstruction and data analysis becomes tedious , And the readability of the code is not as good as SQL. Based on such requirements, the idea of combining SQL and pandas was initiated. That is, by writing SQL code, converting SQL to pandas's syntax and executing the result. If you directly use the database as a storage for SQL refactoring, not only the workload is large, but also some functions of the business logic are SQL can not be achieved, which is why it is necessary to use pandas as a basis to perform the conversion from SQL to pandas instead of vice versa. The pandas dataframe is imported into the database and reconstructed using SQL.
+
 SQL与pandas语法哪个简洁，我们看如下比较，功能都是实现子集的操作：
+SQL and pandas syntax which is concise, we see the following comparison, the function is to achieve a subset of the operation:
 ```sql 
 -- sql 
 update table1 set age=score+levels where id>=5
@@ -25,6 +29,8 @@ table1.loc[loc, 'age']=table1.loc['age2']+2
 感受下上面实现同样的功能，但是代码量完全不同，特别是第二种情况，明显是SQL可读性更强，也更容易维护，在面对快速变化的业务需求，SQL的优势就显示出来了，毕竟业务工程化不需要很复杂的统计函数，更多是增删改查。
 基于上面的直观感受，是我们开发SQL on pandas的原因。
 
+Feel the same functions as above, but the amount of code is completely different. Especially in the second case, obviously SQL is more readable and easier to maintain. In the face of rapidly changing business requirements, the advantages of SQL are displayed. After all, business engineering does not require complicated statistical functions.
+Based on the above intuitive feelings, we are the reason for the development of SQL on pandas.
 
 # 现状
 目前github上已经有类似开源项目，比如
@@ -53,9 +59,15 @@ update table1 set age = py_define_func(score, levels)
 ```
 因此我们开发了这样一个转换模块，将SQL转换成pandas语法，以更少的代码完成用pandas完成update操作，其原理是，用正则表达式和SQL解析引擎配合，将SQL转成pandas代码执行。
 
+Therefore, we have developed a conversion module that converts SQL to pandas syntax and uses pandas to complete the update operation with less code. The principle is to use regular expressions and the SQL parsing engine to convert SQL to pandas code execution.
+
 # 实现过程
 ## 基本假设和约定
   - 1.SQL格式。类似sqlserver和sybaseIQ的语法，但不是标准的SQL，为了在解析多字段同时更新而特别做的限定，同时考虑如果以后改用数据库做存储，代码重构工作量减少到最小。
+  
+  Similar to the sqlserver and sybaseIQ syntax, but not the standard SQL, in order to parse multiple fields at the same time to update the special restrictions, while considering that if you later use the database for storage, code reconstruction workload is reduced to a minimum.
+  
+  
 ```sql
 update table_1 a
    set a.name=b.name,
@@ -86,6 +98,9 @@ update table_1 a
 核心的正则表达式有：
 
 1、提取update表名和别名的正则表达式:
+
+Extract regular expressions for update table names and aliases
+
 ```python
 import re 
 sql="update table_1 a set a.age=a.id+b.age2+1 join table_2 b on a.id=b.id where a.age>2 and b.age2<6"
@@ -93,6 +108,9 @@ re.compile(r"update (.+?) (.+?)set", flags=re.I | re.S).findall(sql)[0].strip()
 ```
 
 2、提取join表名和别名的正则表达式：
+
+Extract regular expressions for join table names and aliases
+
 ```python
 import re 
 sql="update table_1 a set a.age=a.id+b.age2+1 join table_2 b on a.id=b.id where a.age>2 and b.age2<6"
@@ -100,6 +118,9 @@ re.compile(r"join (.+?) (.+?)on on", flags=re.I | re.S).findall(sql)[0].strip()
 re.compile(r"left join (.+?) (.+?)on on", flags=re.I | re.S).findall(sql)[0].strip()
 ```
 3、提取set语句的正则表达式
+
+Extract the regular expression of the set statement
+
 ```python
 import re 
 sql="update table_1 a set a.age=a.id+b.age2+1 from table_2 b where a.id=b.id and a.age>2 and b.age2<6"
@@ -108,6 +129,9 @@ re.compile(r"set(.+?) left join", flags=re.I | re.S).findall(sql)[0].strip()
 ```
 
 4、提取where条件的正则表达式
+
+Extract regular expressions for where conditions
+
 ```python
 import re 
 sql="update table_1 a set a.age=a.id+b.age2+1 from table_2 b where a.id=b.id and a.age>2 and b.age2<6"
@@ -117,6 +141,10 @@ re.compile(r"where(.*)", flags=re.I | re.S).findall(sql)[0].strip()
 转换操作：
 在上一步中我们已经提取了正则子串，接下来就是对这些正则子串的操作，此时需要用sqlparse解析得到更精确的结果，才能进行做更精细的控制。
 主要是where条件和set的操作,操作前后的效果如下：
+
+In the previous step we have extracted the regular substrings. The next step is the operation of these regular substrings. In this case, you need to use sqlparse to get more accurate results in order to do more fine-grained control.
+Mainly the conditions of the where and set operations, the effect before and after the operation are as follows:
+
 ```python
 # 原SQL
 sql="update table_1 a set a.age=a.id+b.age2+1 from table_2 b where a.id=b.id and a.age>2 and b.age2<6"
@@ -151,6 +179,9 @@ eval()计算指定表达式的值，也就是说它要执行的python代码只�
 
 # 使用方法
 下面自定义两个dataframe测试使用方法，其中`sql_update_pd`是封装好后的API，直接调用即可
+
+There are some examples:
+
 ```python 
     # 构造测试数据
     table_1 = pd.DataFrame(data={'id': [1, 2, 3, 4], 'age': [2, 3, 4, 5], 'score': [3, 4, 7, 6], 'heigh': [5, 6, 8, 7]})
@@ -159,9 +190,9 @@ eval()计算指定表达式的值，也就是说它要执行的python代码只�
     print(table_2)
 
     # 测试语法是否正确
-    sql = """ update table_1 set age=id+1 """  # 没有表别名
-    sql = """ update table_1 as a set age=id+1 """  # 不应该用as
-    sql = """ update table_1 a set a.age = a.id + a.score"""  # 没有where条件，就没必要搞SQL这么麻烦了
+    sql = """ update table_1 set age=id+1 """  # 没有表别名(there should be an alias table name)
+    sql = """ update table_1 as a set age=id+1 """  # 不应该用as(you should not use 'as')
+    sql = """ update table_1 a set a.age = a.id + a.score"""  # 没有where条件，就没必要搞SQL这么麻烦了(if not where, pandas is more easy than sql)
     judge_format(sql)
 
     # 正常是写法，字段名也应该带表别名
@@ -169,16 +200,16 @@ eval()计算指定表达式的值，也就是说它要执行的python代码只�
     judge_format(sql)
 
     # ------------------------------------------------------------
-    # 单表更新
+    # 单表更新(update table)
     sql = "update table_1 a set a.age=a.id*2 where a.id>=3"
     table_1 = sql_update_pd(sql, g_objects=locals())
     # ------------------------------------------------------------
-    # 联合更新
+    # 联合更新(update table from another table )
     sql = "update table_1 a set a.age=a.id+b.age2+1 left join table_2 b on a.id=b.id where a.age>2 and b.age2<6"  # 更新中间两行
     table_1 = sql_update_pd(sql, g_objects=locals())
 
     # ------------------------------------------------------------
-    # 使用自定义python函数
+    # 使用自定义python函数(use python define function in sql)
     def add(a, b):
         return a + b
 
@@ -186,7 +217,7 @@ eval()计算指定表达式的值，也就是说它要执行的python代码只�
     table_1 = sql_update_pd(sql, g_objects=locals())
 
     # ------------------------------------------------------------
-    # 多字段更新
+    # 多字段更新(update two or more columns onece)
     sql = "update table_1 a set a.score=a.id+2 set a.heigh=a.age+2 where a.id>=3"
     table_1 = sql_update_pd(sql, g_objects=locals())
 
