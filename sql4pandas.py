@@ -38,7 +38,7 @@ import sqlparse
 import pandas as pd
 
 
-def judge_format(sql):
+def judge_format(sql, table_1_cols, table_2_cols):
     """sql校验"""
     # 去掉换行符,多个空格只保留1个
     sql = re.compile(r'\s{2,100}', flags=re.I | re.S).subn(' ', sql.replace('\n', ' '))[0].strip()
@@ -66,6 +66,15 @@ def judge_format(sql):
     for s in sql:
         if s.isupper():
             raise Exception('SQL应该是全小写的，但是你传进来的SQL出现了大写字母')
+    # 检查字段名是否带表别名
+    sql_p = list(sqlparse.parse(sql)[0].flatten())
+    for i in range(1, len(sql_p), 1):
+        first = sql_p[i - 1]
+        second = sql_p[i]
+        if second._get_repr_name()=='Name' and second.value.strip() in table_1_cols and first.value!='.':
+            raise Exception('字段名没有表别名，请检查，写法应该是：table_1_别名.%s'%second.value.strip())
+        if second._get_repr_name()=='Name' and second.value.strip() in table_2_cols and first.value!='.':
+            raise Exception('字段名没有表别名，请检查，写法应该是：table_2_别名.%s' % second.value.strip())
     return
 
 
@@ -316,27 +325,28 @@ def update_tb2_column_name_then_join(sql_info, join_parser, table_1, table_2):
     return table_1
 
 
-def update_tb1(sql_info, update_parser, g_objects):
+def update_tb1(sql_info, update_parser, table_1, func1, func2, func3):
     """根据update_parser更新table1"""
-    locals = g_objects
     exec('wz = ' + update_parser['where_sql'])
     for set_sql in update_parser['set_sqls']:
         exec(set_sql)
-    return locals[sql_info['tb1']]
+    return table_1
 
 
-def delete_tb1_that_tmp_column(sql_info, g_objects):
+def delete_tb1_that_tmp_column(table_1):
     # 删除以b_tmp_开头的临时列
-    for col in g_objects[sql_info['tb1']].columns:
+    for col in table_1.columns:
         if col.startswith('b_tmp_'):
-            del g_objects[sql_info['tb1']][col]
-    return g_objects[sql_info['tb1']]
+            del table_1[col]
+    return table_1
 
 
-def sql_update_pd(sql, g_objects):
+def sql_update_pd(sql, table_1=None, table_2=None, func1=None, func2=None, func3=None):
     """主函数"""
     # 第一步，判断SQL是否正确
-    judge_format(sql)
+    table_1_cols = table_1.columns.tolist()
+    table_2_cols = table_2.columns.tolist() if isinstance(table_2, pd.DataFrame) else []
+    judge_format(sql, table_1_cols, table_2_cols)
     # 第二步，解析SQL，同时再次判断SQL语法是否正确
     sql_info = tb_condition_cols_parser(sql)
     # 第三步，join关联解析
@@ -347,23 +357,21 @@ def sql_update_pd(sql, g_objects):
     # 第六步，A join B
     # 第七步，将B表的列名改回原来的
     if sql_info['tb2']:
-        g_objects[sql_info['tb1']] = update_tb2_column_name_then_join(sql_info, join_parser,
-                                                                      table_1=g_objects[sql_info['tb1']],
-                                                                      table_2=g_objects[sql_info['tb2']])
+        table_1 = update_tb2_column_name_then_join(sql_info, join_parser, table_1=table_1, table_2=table_2)
     # 第八步，update A
-    g_objects[sql_info['tb1']] = update_tb1(sql_info, update_parser, g_objects)
+    table_1 = update_tb1(sql_info, update_parser, table_1 = table_1, func1=func1, func2=func2, func3=func3)
     # 第9步，删除A中临时列
-    g_objects[sql_info['tb1']] = delete_tb1_that_tmp_column(sql_info, g_objects)
+    table_1 = delete_tb1_that_tmp_column(table_1 = table_1)
     # 第10步，返回A
-    return g_objects[sql_info['tb1']]
+    return table_1
 
 
 def test():
     # 构造测试数据
-    table_1 = pd.DataFrame(data={'id': [1, 2, 3, 4], 'age': [2, 3, 4, 5], 'score': [3, 4, 7, 6], 'heigh': [5, 6, 8, 7]})
-    table_2 = pd.DataFrame(data={'id': [1, 2, 3, 4], 'age2': [3, 4, 5, 6], 'score2': [5, 6, 7, 7]})
-    print(table_1)
-    print(table_2)
+    df1 = pd.DataFrame(data={'id': [1, 2, 3, 4], 'age': [2, 3, 4, 5], 'score': [3, 4, 7, 6], 'heigh': [5, 6, 8, 7]})
+    df2 = pd.DataFrame(data={'id': [1, 2, 3, 4], 'age2': [3, 4, 5, 6], 'score2': [5, 6, 7, 7]})
+    print(df1)
+    print(df2)
 
     # 测试语法是否正确
     sql = """ update table_1 set age=id+1 """  # 没有表别名
@@ -378,21 +386,28 @@ def test():
     # ------------------------------------------------------------
     # 单表更新
     sql = "update table_1 a set a.age=a.id*2 where a.id>=3"
-    table_1 = sql_update_pd(sql, g_objects=locals())
+    sql_update_pd(sql, table_1 = df1)
     # ------------------------------------------------------------
     # 联合更新
-    sql = "update table_1 a set a.age=a.id+b.age2+1 left join table_2 b on a.id=b.id where a.age>2 and b.age2<6"  # 更新中间两行
-    table_1 = sql_update_pd(sql, g_objects=locals())
+    sql = "update table_1 a " \
+          "set a.age=a.id+b.age2+1 " \
+          "left join table_2 b " \
+          "on a.id=b.id " \
+          "where a.age>2 and b.age2<6"  # 更新中间两行
+    new_df_1 = sql_update_pd(sql, table_1=df1, table_2=df2)
 
     # ------------------------------------------------------------
     # 使用自定义python函数
     def add(a, b):
-        return a + b
+        return a * b
+    def add2(a,b):
+        return a-b
 
-    sql = "update table_1 a set a.score=add(a.id, a.age) where a.id>=3"
-    table_1 = sql_update_pd(sql, g_objects=locals())
+    df1['t']=0
+    sql = "update table_1 a set a.score=add(a.id, a.age), a.t = add2(a.age, a.heigh) where a.id>=3"
+    new_df_1 = sql_update_pd(sql, table_1=df1, func1=add, func2=add2)
 
     # ------------------------------------------------------------
     # 多字段更新
-    sql = "update table_1 a set a.score=a.id+2 set a.heigh=a.age+2 where a.id>=3"
-    table_1 = sql_update_pd(sql, g_objects=locals())
+    sql = "update table_1 a set a.score=a.id+2, a.heigh=a.age+2 where a.id>=3"
+    new_df_1 = sql_update_pd(sql, table_1=df1)
